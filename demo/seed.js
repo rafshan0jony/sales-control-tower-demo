@@ -213,7 +213,7 @@ function generateSnapshot() {
 }
 
 function seed() {
-  writeStaticFiles();
+  try { writeStaticFiles(); } catch (_) { /* read-only FS on serverless (Vercel) — committed JSON files are the fallback */ }
   db.getDb();
   seedDb();
   const { orders, deliveries, credit } = generateSnapshot();
