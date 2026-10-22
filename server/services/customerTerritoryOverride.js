@@ -1,0 +1,23 @@
+'use strict';
+
+/**
+ * Customer-code -> system-territory-name overrides.
+ * Fixes DWH territory mistakes for specific customers: when the DWH sales
+ * orders carry the wrong intTerritoryId, override the territory used for
+ * reporting (sales / delivery / credit all honour this).
+ */
+const OVERRIDES = {
+  '222133300': 'Narsingdi',
+  '8398998': 'Keraniganj',
+  '8396188': 'Narayanganj Metro',
+  '222133965': 'Moulvibazar',
+  '222134164': 'Moulvibazar',
+  '22215832': 'Munshiganj',
+};
+
+function territoryFor(customerCode) {
+  if (customerCode == null) return null;
+  return OVERRIDES[String(customerCode).trim()] || null;
+}
+
+module.exports = { territoryFor };

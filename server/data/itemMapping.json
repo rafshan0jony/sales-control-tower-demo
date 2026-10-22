@@ -1,0 +1,35 @@
+{
+  "updatedAt": "2026-10-22T16:00:01.867Z",
+  "rows": [
+    {
+      "item": "Product A 25 kg (T)",
+      "weight": "25",
+      "variant": "Product A"
+    },
+    {
+      "item": "Product B 25 kg (T)",
+      "weight": "25",
+      "variant": "Product B"
+    },
+    {
+      "item": "Product C 50 kg (T)",
+      "weight": "50",
+      "variant": "Product C"
+    },
+    {
+      "item": "Product D 25 kg (T)",
+      "weight": "25",
+      "variant": "Product D"
+    },
+    {
+      "item": "Product E 50 kg (T)",
+      "weight": "50",
+      "variant": "Product E"
+    },
+    {
+      "item": "Rice Bran 1 kg (T)",
+      "weight": "1",
+      "variant": "By-Product"
+    }
+  ]
+}

@@ -1,0 +1,435 @@
+'use strict';
+
+/**
+ * Demo Sales Control Tower — Sync Bridge
+ *
+ * Runs on a machine that CAN reach the DWH (e.g. your office PC). Reads the
+ * operational data and pushes it to the deployed app's /api/sync/ingest
+ * endpoint every 5 minutes. This keeps the database private — the app host
+ * never connects to the DWH directly.
+ *
+ * Run from the project root:
+ *   node bridge/sync-worker.js
+ *
+ * Required env (see bridge/.env.example):
+ *   MSSQL_*            (DWH connection)
+ *   SYNC_TARGET_URL    (deployed app URL, e.g. https://your-app.vercel.app)
+ *   SYNC_SECRET        (shared secret — must match the app's SYNC_SECRET)
+ */
+
+const config = require('../server/config');
+const mcp = require('../server/mcp/client');
+const dates = require('../server/lib/dates');
+const territoryTargetService = require('../server/services/territoryTargetService');
+const tourPlanSheetService = require('../server/services/tourPlanSheetService');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const TARGET_URL = (process.env.SYNC_TARGET_URL || '').replace(/\/$/, '');
+const SECRET = config.sync.secret;
+const LOOKBACK_DAYS = parseInt(process.env.SYNC_LOOKBACK_DAYS || '150', 10);
+const INTERVAL_MS = config.sync.intervalMs;
+const BACKUP_FILE = path.join(__dirname, '..', 'data', 'metadata-backup.json');
+const GITHUB_TOKEN_FILE = path.join(__dirname, '..', 'data', '.github_token');
+const GITHUB_REPO = 'rafshan0jony/demo-sales-tower';
+const SNAPSHOT_BRANCH = 'snapshot';
+const SNAPSHOT_PATH = 'data/snapshot.json';
+const META_PATH = 'data/metadata-backup.json';
+const SALES_REPORT_SHEET_ID = 'DEMO_SALES_REPORT_SHEET_ID';
+const SHEETS_TOKEN_PATH = path.join(os.homedir(), '.local', 'share', 'google-workspace-mcp', 'credentials', 'rafshan_at_demoresource_dot_com.json');
+
+function log(...a) {
+  console.log(`[${new Date().toISOString()}] [bridge]`, ...a);
+}
+
+async function collectSnapshot() {
+  const today = dates.todayStr();
+  const from = dates.addDays(today, -LOOKBACK_DAYS);
+  const [orders, deliveries, territories, credit, territoryTarget, tourPlan] = await Promise.all([
+    mcp.getSalesOrders(from, today),
+    mcp.getDeliveries(from, today),
+    mcp.getTerritoryHierarchy(),
+    mcp.getCreditStatus(),
+    territoryTargetService.fetchFromSheet().catch((e) => { log('WARN: territory target fetch failed:', e.message); return null; }),
+    tourPlanSheetService.fetchFromSheet().catch((e) => { log('WARN: tour plan fetch failed:', e.message); return null; }),
+  ]);
+  return { orders, deliveries, territories, credit, territoryTarget, tourPlan };
+}
+
+async function push(snapshot) {
+  if (!TARGET_URL) throw new Error('SYNC_TARGET_URL is not set');
+  const res = await fetch(TARGET_URL + '/api/sync/ingest', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-sync-secret': SECRET,
+    },
+    body: JSON.stringify(snapshot),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`ingest failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+async function ensureSnapshotBranch(headers) {
+  const branchApi = `https://api.github.com/repos/${GITHUB_REPO}/branches/${SNAPSHOT_BRANCH}`;
+  const check = await fetch(branchApi, { headers });
+  if (check.ok) return;
+  const mainInfo = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/branches/main`, { headers });
+  if (!mainInfo.ok) return;
+  const sha = (await mainInfo.json()).commit.sha;
+  await fetch(`https://api.github.com/repos/${GITHUB_REPO}/git/refs`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ ref: `refs/heads/${SNAPSHOT_BRANCH}`, sha }),
+  });
+}
+
+/**
+ * Persist the latest collected snapshot to GitHub (raw JSON committed to the
+ * dedicated `snapshot` branch). This lets the deployed app recover the most
+ * recent data even when the office PC (this bridge) is switched off and the
+ * app host's database is reset.
+ */
+async function pushSnapshotToGithub(snapshot) {
+  try {
+    const token = fs.readFileSync(GITHUB_TOKEN_FILE, 'utf8').trim();
+    if (!token) { log('WARN: no GitHub token — skipping snapshot backup'); return; }
+    const api = `https://api.github.com/repos/${GITHUB_REPO}/contents/${SNAPSHOT_PATH}?ref=${SNAPSHOT_BRANCH}`;
+    const headers = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'User-Agent': 'sync-bridge' };
+
+    await ensureSnapshotBranch(headers);
+
+    let sha = null;
+    try {
+      const get = await fetch(api, { headers });
+      if (get.ok) sha = (await get.json()).sha;
+    } catch (_) { /* first push — file does not exist yet */ }
+
+    const content = Buffer.from(JSON.stringify(snapshot)).toString('base64');
+    const put = await fetch(api, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ message: 'snapshot ' + new Date().toISOString(), content, sha, branch: SNAPSHOT_BRANCH }),
+    });
+    if (!put.ok) log('WARN: snapshot backup failed', put.status, (await put.text()).slice(0, 200));
+  } catch (err) {
+    log('WARN: snapshot backup failed:', err.message);
+  }
+}
+
+/**
+ * Persist the app's user/role/territory-assignment metadata to GitHub so the
+ * deployed app can restore users (and their territory permissions) on a cold
+ * start even when this bridge is offline.
+ */
+async function pushMetadataToGithub() {
+  if (!TARGET_URL) return;
+  try {
+    const get = await fetch(TARGET_URL + '/api/sync/metadata', { headers: { 'x-sync-secret': SECRET } });
+    if (!get.ok) return;
+    const meta = await get.json();
+
+    // Guard: never overwrite the good GitHub backup with a reset (1 user) or
+    // lossy (users without territory assignments) state.
+    const users = (meta.users || []).length;
+    const assigned = Object.keys(meta.userTerritories || {}).length;
+    if (users <= 1 || assigned <= 1) return;
+
+    const token = fs.readFileSync(GITHUB_TOKEN_FILE, 'utf8').trim();
+    if (!token) return;
+    const api = `https://api.github.com/repos/${GITHUB_REPO}/contents/${META_PATH}?ref=${SNAPSHOT_BRANCH}`;
+    const headers = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'User-Agent': 'sync-bridge' };
+
+    await ensureSnapshotBranch(headers);
+
+    let sha = null;
+    try {
+      const g = await fetch(api, { headers });
+      if (g.ok) sha = (await g.json()).sha;
+    } catch (_) { /* first push */ }
+
+    const content = Buffer.from(JSON.stringify(meta)).toString('base64');
+    const put = await fetch(api, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ message: 'metadata ' + new Date().toISOString(), content, sha, branch: SNAPSHOT_BRANCH }),
+    });
+    if (!put.ok) log('WARN: metadata GitHub backup failed', put.status, (await put.text()).slice(0, 200));
+  } catch (err) {
+    log('WARN: metadata GitHub backup failed:', err.message);
+  }
+}
+
+/**
+ * Back up the app's sales reports to a Google Sheet (full overwrite each run),
+ * so the data survives a host crash / database reset.
+ */
+async function syncSalesReportsToSheet() {
+  if (!TARGET_URL) return;
+  try {
+    const res = await fetch(TARGET_URL + '/api/sync/sales-reports', { headers: { 'x-sync-secret': SECRET } });
+    if (!res.ok) return;
+    const { reports } = await res.json();
+    if (!Array.isArray(reports)) return;
+
+    const header = ['Date', 'Employee', 'Territory', 'Visit Schedule', 'Actual Visit Plan', 'Sales Projection (MT)', 'Deposit Projection (BDT)', 'Actual Sales (MT)', 'Actual Collection (BDT)', 'TA/DA Details', 'TA/DA Bill', 'Projection Submitted', 'Actual Submitted'];
+    const rows = reports.map((r) => [
+      r.date, r.name || '', r.territory || '', r.visitSchedule || '', r.actualVisitPlan || '',
+      r.salesProjectionMt == null ? '' : r.salesProjectionMt,
+      r.depositProjectionBdt == null ? '' : r.depositProjectionBdt,
+      r.actualSalesMt == null ? '' : r.actualSalesMt,
+      r.actualCollectionBdt == null ? '' : r.actualCollectionBdt,
+      r.taDaDetails || '', r.taDaBill == null ? '' : r.taDaBill,
+      r.projectionSubmittedAt || '', r.actualSubmittedAt || '',
+    ]);
+    const values = [header, ...rows];
+
+    const { OAuth2Client } = require('google-auth-library');
+    const token = JSON.parse(fs.readFileSync(SHEETS_TOKEN_PATH, 'utf8'));
+    const oauth = new OAuth2Client(token.client_id, token.client_secret);
+    oauth.setCredentials({ refresh_token: token.refresh_token });
+    const { credentials } = await oauth.refreshAccessToken();
+    const at = credentials.access_token;
+
+    const range = 'Sales Report';
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SALES_REPORT_SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=RAW`;
+    const wres = await fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + at, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ range, values }),
+    });
+    if (!wres.ok) log('WARN: sales report sheet sync failed', wres.status, (await wres.text()).slice(0, 200));
+  } catch (err) {
+    log('WARN: sales report sheet sync failed:', err.message);
+  }
+}
+
+/** Back up delivery schedule lines to the Delivery Schedule tab. */
+async function syncDeliverySchedulesToSheet() {
+  if (!TARGET_URL) return;
+  try {
+    const res = await fetch(TARGET_URL + '/api/sync/delivery-schedules', { headers: { 'x-sync-secret': SECRET } });
+    if (!res.ok) return;
+    const { schedules } = await res.json();
+    if (!Array.isArray(schedules)) return;
+
+    const header = ['Submitted At', 'Delivery Date', 'Submitted By', 'Customer', 'SO No', 'Territory', 'Item', 'UOM', 'Order Qty (bags)', 'Pending Qty (bags)', 'Schedule Qty (bags)', 'Chat Status', 'Remarks'];
+    const rows = schedules.map((r) => [
+      r.submittedAt || '', r.deliveryDate || '', r.submittedBy || '', r.customer || '',
+      r.orderNo || '', r.territory || '', r.item || '', r.uom || '',
+      r.orderQtyBags == null ? '' : r.orderQtyBags,
+      r.pendingQtyBags == null ? '' : r.pendingQtyBags,
+      r.scheduleQtyBags == null ? '' : r.scheduleQtyBags,
+      r.chatStatus || '',
+      r.remarks || '',
+    ]);
+    const values = [header, ...rows];
+    const range = 'Delivery Schedule';
+    const { OAuth2Client } = require('google-auth-library');
+    const token = JSON.parse(fs.readFileSync(SHEETS_TOKEN_PATH, 'utf8'));
+    const oauth = new OAuth2Client(token.client_id, token.client_secret);
+    oauth.setCredentials({ refresh_token: token.refresh_token });
+    const { credentials } = await oauth.refreshAccessToken();
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SALES_REPORT_SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=RAW`;
+    const wres = await fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + credentials.access_token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ range, values }),
+    });
+    if (!wres.ok) log('WARN: delivery schedule sheet sync failed', wres.status, (await wres.text()).slice(0, 200));
+  } catch (err) {
+    log('WARN: delivery schedule sheet sync failed:', err.message);
+  }
+}
+
+// Recover reports from the Sheet backup when the deployed app database is empty.
+async function restoreSalesReportsFromSheet() {
+  if (!TARGET_URL) return;
+  try {
+    const current = await fetch(TARGET_URL + '/api/sync/sales-reports', { headers: { 'x-sync-secret': SECRET } });
+    if (!current.ok) return;
+    const currentBody = await current.json();
+    if (Array.isArray(currentBody.reports) && currentBody.reports.length) return;
+
+    const token = JSON.parse(fs.readFileSync(SHEETS_TOKEN_PATH, 'utf8'));
+    const { OAuth2Client } = require('google-auth-library');
+    const oauth = new OAuth2Client(token.client_id, token.client_secret);
+    oauth.setCredentials({ refresh_token: token.refresh_token });
+    const { credentials } = await oauth.refreshAccessToken();
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SALES_REPORT_SHEET_ID}/values/${encodeURIComponent('Sales Report!A:M')}`;
+    const sres = await fetch(url, { headers: { Authorization: 'Bearer ' + credentials.access_token } });
+    if (!sres.ok) return;
+    const values = (await sres.json()).values || [];
+    if (values.length < 2) return;
+
+    const reports = values.slice(1).map((r) => ({
+      date: r[0], name: r[1], visitSchedule: r[3], actualVisitPlan: r[4],
+      salesProjectionMt: r[5], depositProjectionBdt: r[6], actualSalesMt: r[7],
+      actualCollectionBdt: r[8], taDaDetails: r[9], taDaBill: r[10],
+      projectionSubmittedAt: r[11], actualSubmittedAt: r[12],
+    })).filter((r) => r.date && r.name);
+    if (!reports.length) return;
+
+    const ires = await fetch(TARGET_URL + '/api/sync/sales-reports/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-sync-secret': SECRET },
+      body: JSON.stringify({ reports }),
+    });
+    if (ires.ok) log('restored sales reports from Google Sheet:', await ires.json());
+  } catch (err) {
+    log('WARN: sales report restore failed:', err.message);
+  }
+}
+
+// Recover delivery schedules from the Sheet backup when the app DB is empty.
+async function restoreDeliverySchedulesFromSheet() {
+  if (!TARGET_URL) return;
+  try {
+    const current = await fetch(TARGET_URL + '/api/sync/delivery-schedules', { headers: { 'x-sync-secret': SECRET } });
+    if (!current.ok) return;
+    const currentBody = await current.json();
+    if (Array.isArray(currentBody.schedules) && currentBody.schedules.length) return;
+
+    const token = JSON.parse(fs.readFileSync(SHEETS_TOKEN_PATH, 'utf8'));
+    const { OAuth2Client } = require('google-auth-library');
+    const oauth = new OAuth2Client(token.client_id, token.client_secret);
+    oauth.setCredentials({ refresh_token: token.refresh_token });
+    const { credentials } = await oauth.refreshAccessToken();
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SALES_REPORT_SHEET_ID}/values/${encodeURIComponent('Delivery Schedule')}`;
+    const sres = await fetch(url, { headers: { Authorization: 'Bearer ' + credentials.access_token } });
+    if (!sres.ok) return;
+    const values = (await sres.json()).values || [];
+    if (values.length < 2) return;
+
+    // Columns: 0 SubmittedAt, 1 DeliveryDate, 2 SubmittedBy, 3 Customer, 4 SO No,
+    // 5 Territory, 6 Item, 7 UOM, 8 OrderQty, 9 PendingQty, 10 ScheduleQty,
+    // 11 ChatStatus, 12 Remarks.
+    const groups = new Map();
+    for (let i = 1; i < values.length; i++) {
+      const row = values[i] || [];
+      const submittedAt = String(row[0] || '').trim();
+      const deliveryDate = String(row[1] || '').trim();
+      const submittedBy = String(row[2] || '').trim();
+      if (!submittedBy || !deliveryDate) continue;
+      const key = `${submittedAt}\u0001${deliveryDate}\u0001${submittedBy}`;
+      if (!groups.has(key)) {
+        groups.set(key, { submittedAt, deliveryDate, submittedBy, chatStatus: String(row[11] || '').trim(), remarks: String(row[12] || '').trim(), lines: [] });
+      }
+      groups.get(key).lines.push({
+        customer: String(row[3] || '').trim(),
+        orderNo: String(row[4] || '').trim(),
+        territory: String(row[5] || '').trim(),
+        item: String(row[6] || '').trim(),
+        uom: String(row[7] || '').trim(),
+        orderQtyBags: row[8] == null || row[8] === '' ? null : Number(row[8]),
+        pendingQtyBags: row[9] == null || row[9] === '' ? null : Number(row[9]),
+        scheduleQtyBags: row[10] == null || row[10] === '' ? null : Number(row[10]),
+      });
+    }
+
+    const schedules = [...groups.values()]
+      .map((g) => ({ ...g, lines: g.lines.filter((l) => l.orderNo && l.item) }))
+      .filter((g) => g.lines.length);
+    if (!schedules.length) return;
+
+    const ires = await fetch(TARGET_URL + '/api/sync/delivery-schedules/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-sync-secret': SECRET },
+      body: JSON.stringify({ schedules }),
+    });
+    if (ires.ok) log('restored delivery schedules from Google Sheet:', await ires.json());
+  } catch (err) {
+    log('WARN: delivery schedule restore failed:', err.message);
+  }
+}
+
+/**
+ * Backup / restore app metadata (users/roles/territories/targets/config) so
+ * created users survive the host's ephemeral-database resets.
+ */
+async function backupRestoreMetadata() {
+  if (!TARGET_URL) return;
+  const get = await fetch(TARGET_URL + '/api/sync/metadata', { headers: { 'x-sync-secret': SECRET } });
+  if (!get.ok) return;
+  const current = await get.json();
+
+  let backup = null;
+  try { backup = JSON.parse(fs.readFileSync(BACKUP_FILE, 'utf8')); } catch (_) {}
+
+  const currentUsers = (current.users || []).length;
+  const currentAssigned = Object.keys(current.userTerritories || {}).length;
+  const backupUsers = backup && Array.isArray(backup.users) ? backup.users.length : 0;
+  const backupAssigned = backup && backup.userTerritories ? Object.keys(backup.userTerritories).length : 0;
+
+  if (currentUsers === 1 && backupUsers > 1) {
+    // Host DB was reset (only admin re-seeded) — restore the backup.
+    const res = await fetch(TARGET_URL + '/api/sync/metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-sync-secret': SECRET },
+      body: JSON.stringify(backup),
+    });
+    if (res.ok) {
+      log(`restored metadata backup (${backupUsers} users)`);
+    } else {
+      log('WARN: metadata restore failed', res.status);
+    }
+  } else if (currentUsers > 1 && currentAssigned >= backupAssigned) {
+    // Healthy state — refresh the local backup. Never overwrite a more-complete
+    // backup with a lossy state (users present but territory assignments lost).
+    fs.writeFileSync(BACKUP_FILE, JSON.stringify(current));
+  }
+}
+
+async function runOnce() {
+  const started = Date.now();
+  // Restore app-only reports before the DWH push so a temporary DWH outage
+  // cannot prevent recovery from the Google Sheet backup.
+  try { await restoreSalesReportsFromSheet(); } catch (err) { log('WARN: sales report restore failed:', err.message); }
+  try { await restoreDeliverySchedulesFromSheet(); } catch (err) { log('WARN: delivery schedule restore failed:', err.message); }
+  log('collecting from DWH...');
+  const snapshot = await collectSnapshot();
+  log(`collected ${snapshot.orders.length} orders, ${snapshot.deliveries.length} deliveries in ${Date.now() - started}ms`);
+  const result = await push(snapshot);
+  log('pushed to', TARGET_URL, '->', JSON.stringify(result.sync && { status: result.sync.status, counts: result.sync.counts }));
+  try { await pushSnapshotToGithub(snapshot); } catch (err) { log('WARN: snapshot backup failed:', err.message); }
+  try { await backupRestoreMetadata(); } catch (err) { log('WARN: metadata backup failed:', err.message); }
+  try { await pushMetadataToGithub(); } catch (err) { log('WARN: metadata GitHub backup failed:', err.message); }
+  try { await syncSalesReportsToSheet(); } catch (err) { log('WARN: sales report sheet sync failed:', err.message); }
+  try { await syncDeliverySchedulesToSheet(); } catch (err) { log('WARN: delivery schedule sheet sync failed:', err.message); }
+}
+
+async function main() {
+  if (!TARGET_URL) {
+    log('WARNING: SYNC_TARGET_URL not set — set it to the deployed app URL and re-run.');
+  }
+  log('bridge started. target =', TARGET_URL || '(unset)', '| interval =', INTERVAL_MS, 'ms | lookback =', LOOKBACK_DAYS, 'days');
+
+  const loop = async () => {
+    try {
+      await runOnce();
+    } catch (err) {
+      log('ERROR:', err.message);
+    }
+  };
+
+  // Frequent metadata backup/restore: recovers users/roles quickly whenever a
+  // Render deploy resets the (ephemeral) app DB. Runs every 60s.
+  const metaLoop = async () => {
+    try {
+      await backupRestoreMetadata();
+    } catch (err) {
+      log('WARN: metadata backup failed:', err.message);
+    }
+  };
+
+  await loop();
+  setInterval(loop, INTERVAL_MS);
+  await metaLoop();
+  setInterval(metaLoop, 60000);
+}
+
+main();

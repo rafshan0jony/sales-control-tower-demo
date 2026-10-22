@@ -1,0 +1,193 @@
+{
+  "updatedAt": "2026-10-22T16:00:01.924Z",
+  "months": [
+    "2026-10"
+  ],
+  "products": [
+    "Product A",
+    "Product B",
+    "Product C",
+    "Product D",
+    "Product E",
+    "By-Product",
+    "Total Target"
+  ],
+  "rows": [
+    {
+      "month": "2026-10",
+      "territory": "Territory N1",
+      "targets": {
+        "Product A": 128,
+        "Product B": 101,
+        "Product C": 173,
+        "Product D": 141,
+        "Product E": 51
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory N2",
+      "targets": {
+        "Product A": 115,
+        "Product B": 69,
+        "Product C": 132,
+        "Product D": 176,
+        "Product E": 105
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory N3",
+      "targets": {
+        "Product A": 65,
+        "Product B": 179,
+        "Product C": 154,
+        "Product D": 75,
+        "Product E": 56
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory N4",
+      "targets": {
+        "Product A": 110,
+        "Product B": 144,
+        "Product C": 130,
+        "Product D": 21,
+        "Product E": 105
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory N5",
+      "targets": {
+        "Product A": 171,
+        "Product B": 29,
+        "Product C": 127,
+        "Product D": 26,
+        "Product E": 68
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory S1",
+      "targets": {
+        "Product A": 31,
+        "Product B": 53,
+        "Product C": 161,
+        "Product D": 115,
+        "Product E": 25
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory S2",
+      "targets": {
+        "Product A": 51,
+        "Product B": 172,
+        "Product C": 108,
+        "Product D": 166,
+        "Product E": 78
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory S3",
+      "targets": {
+        "Product A": 101,
+        "Product B": 27,
+        "Product C": 29,
+        "Product D": 120,
+        "Product E": 127
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory S4",
+      "targets": {
+        "Product A": 64,
+        "Product B": 136,
+        "Product C": 58,
+        "Product D": 75,
+        "Product E": 153
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory S5",
+      "targets": {
+        "Product A": 175,
+        "Product B": 111,
+        "Product C": 57,
+        "Product D": 71,
+        "Product E": 73
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory E1",
+      "targets": {
+        "Product A": 33,
+        "Product B": 139,
+        "Product C": 143,
+        "Product D": 145,
+        "Product E": 187
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory E2",
+      "targets": {
+        "Product A": 36,
+        "Product B": 190,
+        "Product C": 98,
+        "Product D": 190,
+        "Product E": 45
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory E3",
+      "targets": {
+        "Product A": 40,
+        "Product B": 23,
+        "Product C": 85,
+        "Product D": 107,
+        "Product E": 130
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory W1",
+      "targets": {
+        "Product A": 182,
+        "Product B": 34,
+        "Product C": 150,
+        "Product D": 188,
+        "Product E": 70
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "Territory W2",
+      "targets": {
+        "Product A": 147,
+        "Product B": 52,
+        "Product C": 114,
+        "Product D": 168,
+        "Product E": 42
+      }
+    },
+    {
+      "month": "2026-10",
+      "territory": "National",
+      "targets": {
+        "Product A": 1449,
+        "Product B": 1459,
+        "Product C": 1719,
+        "Product D": 1784,
+        "Product E": 1315
+      }
+    }
+  ]
+}

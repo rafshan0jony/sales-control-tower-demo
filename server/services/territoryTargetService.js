@@ -1,0 +1,234 @@
+'use strict';
+
+/**
+ * Territory target (source: Google Sheet "territory target" tab).
+ * Provides monthly target (MT) per territory and per product variant.
+ * A "National" row holds the national product totals for the month.
+ * By-product targets are excluded from totals (matching the rest of the app).
+ *
+ * The data is dynamic: the sync bridge fetches the sheet and pushes the parsed
+ * result to the app (see syncService.applyRemoteSnapshot -> setData). A static
+ * snapshot (server/data/territoryTarget.json) is the fallback until then.
+ */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const SHEET_ID = 'DEMO_SHEET_ID';
+const TOKEN_PATH = path.join(os.homedir(), '.local', 'share', 'google-workspace-mcp', 'credentials', 'rafshan_at_demoresource_dot_com.json');
+const BYPRODUCT = 'By-Product';
+const MONTHS = { jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8, sep: 9, september: 9, oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12 };
+
+// Old territory names (used by earlier target rows) -> new territory names.
+const TERRITORY_RENAME = {
+  'badda & jatrabari': 'Badda',
+  'savar & manikganj': 'Savar',
+  'mohammadpur & kawranbazar': 'Mohammadpur',
+  'munshiganj & araihazar': 'Munshiganj',
+  'laxmipur & feni': 'Laxmipur',
+  'cumilla metro & chandpur': 'Cumilla Metro',
+  'sylhet metro & sunamganj': 'Sylhet Metro',
+  'hobiganj & moulvibazar': 'Moulvibazar',
+  'narsingdi & brahmanbaria': 'Narsingdi',
+  'gazipur & tongi': 'Gazipur',
+  'tongi': 'Gazipur',
+  'jashore metro': 'Khulna Metro',
+  'rangpur metro': 'Madaripur',
+};
+
+let data = null;
+
+function num(v) {
+  if (typeof v === 'number') return v;
+  const n = parseFloat(String(v == null ? '' : v).replace(/,/g, '').trim());
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Map old territory names -> new names and merge duplicate rows (sum targets). */
+function normalizeRows(rows) {
+  const seen = new Map();
+  for (const r of rows) {
+    const name = TERRITORY_RENAME[String(r.territory).toLowerCase()] || r.territory;
+    const key = r.month + '\u0001' + name.toLowerCase();
+    if (!seen.has(key)) {
+      seen.set(key, { month: r.month, territory: name, targets: { ...r.targets } });
+    } else {
+      const e = seen.get(key);
+      for (const [p, v] of Object.entries(r.targets || {})) {
+        e.targets[p] = (e.targets[p] || 0) + (v || 0);
+      }
+    }
+  }
+  return [...seen.values()];
+}
+
+function normalizeMonth(s) {
+  const str = String(s || '').trim();
+  const m = str.match(/^([A-Za-z]+)[\s-]*(\d{4})$/);
+  if (!m) return '';
+  const mo = MONTHS[m[1].toLowerCase()];
+  if (!mo) return '';
+  return `${m[2]}-${String(mo).padStart(2, '0')}`;
+}
+
+/** Parse the raw sheet values into { updatedAt, months, products, rows }. */
+function parse(vals) {
+  if (!vals || vals.length < 2) return { updatedAt: new Date().toISOString(), months: [], products: [], rows: [] };
+  const header = vals[0];
+  const products = [];
+  for (let i = 2; i < header.length; i++) {
+    const p = String(header[i] || '').trim();
+    const pl = p.toLowerCase();
+    if (p && pl !== 'by-product' && pl !== 'total target') products.push(p);
+  }
+  const rows = [];
+  for (let i = 1; i < vals.length; i++) {
+    const row = vals[i] || [];
+    const month = normalizeMonth(row[0]);
+    const territory = String(row[1] || '').trim();
+    if (!month || !territory) continue;
+    const targets = {};
+    for (let j = 0; j < products.length; j++) targets[products[j]] = num(row[2 + j]);
+    rows.push({ month, territory, targets });
+  }
+  const months = [...new Set(rows.map((r) => r.month))].sort();
+  return { updatedAt: new Date().toISOString(), months, products, rows: normalizeRows(rows) };
+}
+
+function load() {
+  if (data) return data;
+  try {
+    const raw = require('../data/territoryTarget.json');
+    data = { ...raw, rows: normalizeRows(raw.rows || []) };
+  } catch (_) {
+    data = { updatedAt: '', months: [], products: [], rows: [] };
+  }
+  return data;
+}
+
+/** Replace the in-memory data (called when the bridge pushes fresh data). */
+function setData(newData) {
+  if (newData && newData.rows) data = newData;
+}
+
+/** Fetch + parse the "territory target" tab (runs on the office PC / bridge). */
+async function fetchFromSheet() {
+  if (!fs.existsSync(TOKEN_PATH)) throw new Error('sheets token not found: ' + TOKEN_PATH);
+  const { OAuth2Client } = require('google-auth-library');
+  const token = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'));
+  const oauth = new OAuth2Client(token.client_id, token.client_secret);
+  oauth.setCredentials({ refresh_token: token.refresh_token });
+  const { credentials } = await oauth.refreshAccessToken();
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent('territory target')}`;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + credentials.access_token } });
+  if (!res.ok) throw new Error('sheets ' + res.status);
+  const vals = (await res.json()).values || [];
+  const parsed = parse(vals);
+  data = parsed;
+  return parsed;
+}
+
+function rowsForMonth(month) {
+  return load().rows.filter((r) => r.month === month && r.territory !== 'National');
+}
+
+function nationalRow(month) {
+  return load().rows.find((r) => r.month === month && r.territory === 'National') || null;
+}
+
+function productsList() {
+  return (load().products || []).filter((p) => {
+    const pl = String(p).toLowerCase();
+    return pl !== 'by-product' && pl !== 'total target';
+  });
+}
+
+/** Sorted month list (YYYY-MM). */
+function months() {
+  return [...new Set(load().rows.map((r) => r.month))].sort();
+}
+
+/** Latest month available. */
+function latestMonth() {
+  const ms = months();
+  return ms.length ? ms[ms.length - 1] : '';
+}
+
+/** Total target MT for a territory in a month (excluding By-Product). */
+function territoryTotalMt(month, territory) {
+  const r = load().rows.find((x) => x.month === month && x.territory === territory);
+  if (!r) return 0;
+  return productsList().reduce((s, p) => s + num(r.targets[p]), 0);
+}
+
+/** National total target MT for a month (excluding By-Product). */
+function nationalTotalMt(month) {
+  const r = nationalRow(month);
+  if (!r) return 0;
+  return productsList().reduce((s, p) => s + num(r.targets[p]), 0);
+}
+
+/** National target MT for a product in a month. */
+function nationalProductMt(month, product) {
+  const r = nationalRow(month);
+  return r ? num(r.targets[product]) : 0;
+}
+
+/** Per-territory target MT for a month (excluding National & By-Product). */
+function territoryTargets(month) {
+  return rowsForMonth(month).map((r) => ({
+    territory: r.territory,
+    targetMt: productsList().reduce((s, p) => s + num(r.targets[p]), 0),
+  }));
+}
+
+/** Total target MT for a set of territory names (case-insensitive), excluding National. */
+function scopeTotalMt(month, territoryNames) {
+  if (!territoryNames || !territoryNames.size) return 0;
+  const names = new Set([...territoryNames].map((t) => String(t).toLowerCase()));
+  return rowsForMonth(month)
+    .filter((r) => names.has(r.territory.toLowerCase()))
+    .reduce((s, r) => s + productsList().reduce((p, prod) => p + num(r.targets[prod]), 0), 0);
+}
+
+/** Target MT for a product across a set of territory names (case-insensitive). */
+function scopeProductMt(month, product, territoryNames) {
+  if (!territoryNames || !territoryNames.size) return 0;
+  const names = new Set([...territoryNames].map((t) => String(t).toLowerCase()));
+  return rowsForMonth(month)
+    .filter((r) => names.has(r.territory.toLowerCase()))
+    .reduce((s, r) => s + num(r.targets[product]), 0);
+}
+
+/** Per-territory target for a scope (all territories if scopeAll). */
+function territoryTargetsForScope(month, scope) {
+  const all = territoryTargets(month);
+  if (scope && !scope.scopeAll) {
+    const names = new Set([...(scope.territoryNames || [])].map((t) => String(t).toLowerCase()));
+    return all.filter((t) => names.has(t.territory.toLowerCase()));
+  }
+  return all;
+}
+
+/** Distinct territory names in the target sheet's order (latest month). */
+function territoriesInOrder() {
+  return [...new Set(rowsForMonth(latestMonth()).map((r) => r.territory))];
+}
+
+module.exports = {
+  fetchFromSheet,
+  setData,
+  months,
+  latestMonth,
+  productsList,
+  rowsForMonth,
+  nationalRow,
+  territoryTotalMt,
+  nationalTotalMt,
+  nationalProductMt,
+  territoryTargets,
+  scopeTotalMt,
+  scopeProductMt,
+  territoryTargetsForScope,
+  territoriesInOrder,
+};

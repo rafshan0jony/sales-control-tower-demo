@@ -1,0 +1,56 @@
+'use strict';
+
+/**
+ * Territory mapping (source: Google Sheet "territory maping").
+ * Maps the DWH "system territory" (column A) to the reporting hierarchy:
+ *   system territory (A) -> actual territory (B) -> area (C) -> region (D)
+ */
+const mapping = require('../data/territoryMapping.json');
+
+const allRows = mapping.rows;
+
+const bySystem = new Map();
+for (const r of allRows) {
+  bySystem.set(String(r.system).trim().toLowerCase(), r);
+}
+
+function map(systemName) {
+  if (systemName == null) return null;
+  return bySystem.get(String(systemName).trim().toLowerCase()) || null;
+}
+
+/** Return { territory, area, region, systemTerritory } for a raw DWH territory name,
+ *  or null when the territory is not in the mapping (so its data is excluded). */
+function resolve(rawName) {
+  const m = map(rawName);
+  if (!m) return null;
+  const raw = rawName == null ? null : String(rawName).trim();
+  return { territory: m.territory, area: m.area, region: m.region, systemTerritory: raw };
+}
+
+function list() {
+  return allRows;
+}
+
+function regions() {
+  return [...new Set(allRows.map((r) => r.region))].sort();
+}
+
+function areas() {
+  return [...new Set(allRows.map((r) => r.area))].sort();
+}
+
+function territories() {
+  return [...new Set(allRows.map((r) => r.territory))].sort();
+}
+
+/** Distinct territories with their area + region (for filter dropdowns). */
+function territoriesDetailed() {
+  const seen = new Map();
+  for (const r of allRows) {
+    if (!seen.has(r.territory)) seen.set(r.territory, { territory: r.territory, area: r.area, region: r.region });
+  }
+  return [...seen.values()].sort((a, b) => a.region.localeCompare(b.region) || a.territory.localeCompare(b.territory));
+}
+
+module.exports = { map, resolve, list, regions, areas, territories, territoriesDetailed };

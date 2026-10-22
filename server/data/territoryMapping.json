@@ -1,0 +1,95 @@
+{
+  "updatedAt": "2026-10-22T16:00:01.866Z",
+  "rows": [
+    {
+      "system": "Territory N1",
+      "territory": "Territory N1",
+      "area": "North Area 1",
+      "region": "North Region"
+    },
+    {
+      "system": "Territory N2",
+      "territory": "Territory N2",
+      "area": "North Area 1",
+      "region": "North Region"
+    },
+    {
+      "system": "Territory N3",
+      "territory": "Territory N3",
+      "area": "North Area 1",
+      "region": "North Region"
+    },
+    {
+      "system": "Territory N4",
+      "territory": "Territory N4",
+      "area": "North Area 2",
+      "region": "North Region"
+    },
+    {
+      "system": "Territory N5",
+      "territory": "Territory N5",
+      "area": "North Area 2",
+      "region": "North Region"
+    },
+    {
+      "system": "Territory S1",
+      "territory": "Territory S1",
+      "area": "South Area 1",
+      "region": "South Region"
+    },
+    {
+      "system": "Territory S2",
+      "territory": "Territory S2",
+      "area": "South Area 1",
+      "region": "South Region"
+    },
+    {
+      "system": "Territory S3",
+      "territory": "Territory S3",
+      "area": "South Area 1",
+      "region": "South Region"
+    },
+    {
+      "system": "Territory S4",
+      "territory": "Territory S4",
+      "area": "South Area 2",
+      "region": "South Region"
+    },
+    {
+      "system": "Territory S5",
+      "territory": "Territory S5",
+      "area": "South Area 2",
+      "region": "South Region"
+    },
+    {
+      "system": "Territory E1",
+      "territory": "Territory E1",
+      "area": "East Area 1",
+      "region": "East Region"
+    },
+    {
+      "system": "Territory E2",
+      "territory": "Territory E2",
+      "area": "East Area 1",
+      "region": "East Region"
+    },
+    {
+      "system": "Territory E3",
+      "territory": "Territory E3",
+      "area": "East Area 2",
+      "region": "East Region"
+    },
+    {
+      "system": "Territory W1",
+      "territory": "Territory W1",
+      "area": "West Area 1",
+      "region": "West Region"
+    },
+    {
+      "system": "Territory W2",
+      "territory": "Territory W2",
+      "area": "West Area 1",
+      "region": "West Region"
+    }
+  ]
+}

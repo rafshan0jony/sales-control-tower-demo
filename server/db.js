@@ -1,0 +1,300 @@
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { DatabaseSync } = require('node:sqlite');
+const config = require('./config');
+const { hashPassword } = require('./lib/passwords');
+
+function ensureDir(p) {
+  const dir = path.dirname(p);
+  if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function open() {
+  ensureDir(config.db.path);
+  const db = new DatabaseSync(config.db.path);
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA foreign_keys = ON;');
+  migrate(db);
+  seed(db);
+  return db;
+}
+
+function migrate(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      email TEXT UNIQUE,
+      name TEXT NOT NULL,
+      employee_id TEXT,
+      password_hash TEXT NOT NULL,
+      role_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'active',
+      last_login_at TEXT,
+      reset_token TEXT,
+      reset_token_expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS roles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      level INTEGER NOT NULL DEFAULT 4,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS permissions (
+      code TEXT PRIMARY KEY,
+      label TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS role_permissions (
+      role_id INTEGER NOT NULL,
+      permission TEXT NOT NULL,
+      PRIMARY KEY (role_id, permission)
+    );
+
+    CREATE TABLE IF NOT EXISTS territories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT UNIQUE,
+      name TEXT NOT NULL,
+      level INTEGER NOT NULL DEFAULT 4,
+      parent_id INTEGER,
+      channel_id INTEGER,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_territories (
+      user_id INTEGER NOT NULL,
+      territory_id INTEGER NOT NULL,
+      PRIMARY KEY (user_id, territory_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      territory_id INTEGER NOT NULL,
+      product TEXT NOT NULL,
+      month TEXT NOT NULL,
+      target_value REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      UNIQUE (territory_id, product, month)
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      username TEXT,
+      action TEXT NOT NULL,
+      entity TEXT,
+      entity_id TEXT,
+      metadata TEXT,
+      ip TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_status (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      status TEXT NOT NULL DEFAULT 'idle',
+      last_updated TEXT,
+      last_success TEXT,
+      error TEXT,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      data_source TEXT NOT NULL DEFAULT 'MCP',
+      counts TEXT,
+      started_at TEXT,
+      finished_at TEXT,
+      duration_ms INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_data (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS tour_plan_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      day INTEGER NOT NULL,
+      sales_order_mt REAL,
+      visit_plan_change TEXT,
+      ta_da_details TEXT,
+      ta_da_bill TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE (user_id, month, day)
+    );
+
+    CREATE TABLE IF NOT EXISTS sales_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      visit_schedule TEXT,
+      actual_visit_plan TEXT,
+      sales_projection_mt REAL,
+      deposit_projection_bdt REAL,
+      actual_sales_mt REAL,
+      actual_collection_bdt REAL,
+      ta_da_details TEXT,
+      ta_da_bill TEXT,
+      projection_submitted_at TEXT,
+      actual_submitted_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      UNIQUE (user_id, date)
+    );
+
+    CREATE TABLE IF NOT EXISTS delivery_schedules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      delivery_date TEXT NOT NULL,
+      submitted_at TEXT NOT NULL,
+      chat_message_name TEXT,
+      chat_status TEXT NOT NULL DEFAULT 'pending',
+      chat_error TEXT,
+      remarks TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS delivery_schedule_lines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      schedule_id INTEGER NOT NULL,
+      order_no TEXT NOT NULL,
+      customer TEXT NOT NULL,
+      territory TEXT,
+      item TEXT NOT NULL,
+      uom TEXT,
+      weight REAL,
+      order_qty_bags REAL NOT NULL,
+      pending_qty_bags REAL NOT NULL,
+      schedule_qty_bags REAL NOT NULL,
+      FOREIGN KEY (schedule_id) REFERENCES delivery_schedules(id) ON DELETE CASCADE
+    );
+  `);
+
+  // Add TA/DA fields to an existing sales_reports table (older databases).
+  try { db.exec('ALTER TABLE sales_reports ADD COLUMN ta_da_details TEXT'); } catch (_) { /* exists */ }
+  try { db.exec('ALTER TABLE sales_reports ADD COLUMN ta_da_bill TEXT'); } catch (_) { /* exists */ }
+
+  // Delivery schedule remarks (employee note).
+  try { db.exec('ALTER TABLE delivery_schedules ADD COLUMN remarks TEXT'); } catch (_) { /* exists */ }
+
+  // Admin-visible plaintext password (for the admin user panel).
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN plain_password TEXT');
+  } catch (_) { /* column already exists */ }
+
+  // User title / designation (e.g. "Zonal Manager", "Manager").
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN title TEXT');
+  } catch (_) { /* column already exists */ }
+
+  // Profile photo (data URL) for the avatar.
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN photo TEXT');
+  } catch (_) { /* column already exists */ }
+}
+
+const PERMISSIONS = [
+  ['VIEW_SALES_ORDER', 'View Sales Order'],
+  ['VIEW_DELIVERY', 'View Delivery'],
+  ['VIEW_PENDING', 'View Pending'],
+  ['VIEW_TARGET', 'View Target vs Achievement'],
+  ['VIEW_CUSTOMER', 'View Customer data'],
+  ['VIEW_PRODUCT', 'View Product/SKU data'],
+  ['VIEW_ANALYTICS', 'View Analytics'],
+  ['VIEW_RECOMMENDATION', 'View Recommendations'],
+  ['VIEW_TOUR_PLAN', 'View Tour Plan'],
+  ['EXPORT_DATA', 'Export data'],
+  ['VIEW_HIGHER_LEVEL_SUMMARY', 'View higher-level summary'],
+  ['MANAGE_USERS', 'Manage users'],
+  ['MANAGE_ROLES', 'Manage roles'],
+  ['MANAGE_PERMISSIONS', 'Manage permissions'],
+  ['MANAGE_TERRITORIES', 'Manage territories'],
+  ['SYSTEM_ADMIN', 'System administration'],
+];
+
+const LEVELS = { NATIONAL: 0, REGION: 1, AREA: 2, ZONE: 3, TERRITORY: 4 };
+
+function seed(db) {
+  const now = new Date().toISOString();
+
+  const insPerm = db.prepare('INSERT OR IGNORE INTO permissions (code, label) VALUES (?, ?)');
+  for (const [code, label] of PERMISSIONS) insPerm.run(code, label);
+
+  const roleCount = db.prepare('SELECT COUNT(*) AS c FROM roles').get().c;
+  if (roleCount === 0) {
+    const insRole = db.prepare('INSERT INTO roles (code, name, level, active, created_at) VALUES (?, ?, ?, 1, ?)');
+    const defs = [
+      ['ADMIN', 'Administrator', -1],
+      ['NATIONAL', 'National Manager', LEVELS.NATIONAL],
+      ['REGION', 'Region Manager', LEVELS.REGION],
+      ['AREA', 'Area Manager', LEVELS.AREA],
+      ['TERRITORY', 'Territory Officer', LEVELS.TERRITORY],
+    ];
+    for (const [code, name, level] of defs) insRole.run(code, name, level, now);
+
+    const getRole = db.prepare('SELECT id FROM roles WHERE code = ?');
+    const grant = db.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission) VALUES (?, ?)');
+
+    const adminId = getRole.get('ADMIN').id;
+    for (const [code] of PERMISSIONS) grant.run(adminId, code);
+
+    const dashPermissions = [
+      'VIEW_SALES_ORDER', 'VIEW_DELIVERY', 'VIEW_PENDING', 'VIEW_TARGET',
+      'VIEW_CUSTOMER', 'VIEW_PRODUCT', 'VIEW_ANALYTICS', 'VIEW_RECOMMENDATION',
+      'VIEW_TOUR_PLAN', 'EXPORT_DATA',
+    ];
+    const nationalId = getRole.get('NATIONAL').id;
+    for (const p of dashPermissions) grant.run(nationalId, p);
+    grant.run(nationalId, 'VIEW_HIGHER_LEVEL_SUMMARY');
+
+    const regionId = getRole.get('REGION').id;
+    for (const p of dashPermissions) grant.run(regionId, p);
+
+    const areaId = getRole.get('AREA').id;
+    for (const p of dashPermissions) grant.run(areaId, p);
+
+    const terrId = getRole.get('TERRITORY').id;
+    for (const p of dashPermissions) grant.run(terrId, p);
+  }
+
+  const terrCount = db.prepare('SELECT COUNT(*) AS c FROM territories').get().c;
+  if (terrCount === 0) {
+    db.prepare(
+      "INSERT INTO territories (code, name, level, parent_id, channel_id, active, created_at) VALUES ('NATIONAL', 'National', 0, NULL, ?, 1, ?)"
+    ).run(config.app.channelId, now);
+  }
+
+  const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+  if (userCount === 0) {
+    const adminRole = db.prepare('SELECT id FROM roles WHERE code = ?').get('ADMIN');
+    const national = db.prepare('SELECT id FROM territories WHERE level = 0 LIMIT 1').get();
+    const pwd = process.env.ADMIN_INITIAL_PASSWORD || 'admin123';
+    db.prepare(
+      'INSERT INTO users (username, email, name, employee_id, password_hash, role_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run('admin', 'admin@demo.local', 'System Administrator', 'A0000', hashPassword(pwd), adminRole.id, 'active', now);
+    if (national) {
+      db.prepare('INSERT OR IGNORE INTO user_territories (user_id, territory_id) VALUES (?, ?)').run(1, national.id);
+    }
+  }
+}
+
+let _db = null;
+
+function getDb() {
+  if (!_db) _db = open();
+  return _db;
+}
+
+module.exports = { open, getDb, LEVELS, PERMISSIONS };
