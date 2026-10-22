@@ -57,6 +57,24 @@ a { color: var(--primary); text-decoration: none; }
 .login-foot { margin-top: 20px; font-size: 12px; text-align: center; }
 .login-credit { margin-top: 6px; font-size: 12px; text-align: center; color: var(--text-muted); font-weight: 500; }
 
+/* ---------- Role (position) selector ---------- */
+.login-card-wide { width: 520px; max-width: 94vw; }
+.role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px; }
+.role-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+  background: var(--surface); color: var(--text); cursor: pointer; text-align: left;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.role-card:hover {
+  transform: translateY(-3px); border-color: var(--primary, #0f766e);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.18);
+}
+.role-card .role-ico { font-size: 26px; line-height: 1; }
+.role-card .role-title { font-size: 14px; font-weight: 700; }
+.role-card .role-desc { font-size: 12px; color: var(--text-muted); }
+.role-card.loading { opacity: 0.6; pointer-events: none; }
+
 /* ---------- Shell layout ---------- */
 .shell { display: flex; min-height: 100vh; }
 .sidebar {

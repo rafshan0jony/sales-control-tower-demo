@@ -2,7 +2,7 @@
  * Static app shell is cached (stale-while-revalidate); API responses are
  * always fetched fresh so the dashboard never shows stale sales data.
  */
-const CACHE = 'sales-tower-v1';
+const CACHE = 'sales-tower-v2';
 
 self.addEventListener('install', () => {
   self.skipWaiting();

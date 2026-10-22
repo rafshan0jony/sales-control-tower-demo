@@ -33,6 +33,14 @@ router.post('/logout', authenticate, (req, res) => {
   res.json({ ok: true });
 });
 
+router.post('/demo-login', authLimiter, asyncHandler(async (req, res) => {
+  const { role } = req.body || {};
+  if (!role) throw badRequest('Role is required');
+  const result = authService.demoLogin(role, ip(req));
+  if (!result.ok) return res.status(400).json({ error: result.code === 'UNKNOWN_ROLE' ? 'Unknown role' : 'No demo user for this role' });
+  res.json({ token: result.token, user: result.user });
+}));
+
 router.get('/me', authenticate, (req, res) => {
   const s = req.scope;
   res.json({

@@ -44,6 +44,24 @@ async function login(identifier, password, ip) {
   return { ok: true, token, user: userPayload(user) };
 }
 
+/**
+ * Password-less demo login: pick a role code (NATIONAL / REGION / AREA /
+ * TERRITORY) and get signed in as the first active demo user with that role.
+ * Used by the public "select your position" screen.
+ */
+function demoLogin(roleCode, ip) {
+  const role = rolesRepo.findByCode(roleCode);
+  if (!role) return { ok: false, code: 'UNKNOWN_ROLE' };
+  const db = require('../db').getDb();
+  const row = db.prepare('SELECT id FROM users WHERE role_id = ? AND status = ? ORDER BY id LIMIT 1').get(role.id, 'active');
+  if (!row) return { ok: false, code: 'NO_DEMO_USER' };
+  const user = usersRepo.findById(row.id);
+  usersRepo.setLastLogin(user.id);
+  auditRepo.log({ action: 'DEMO_LOGIN', userId: user.id, username: user.username, ip, metadata: { role: roleCode } });
+  const token = tokens.sign({ sub: user.id, username: user.username });
+  return { ok: true, token, user: userPayload(user) };
+}
+
 function logout(user, ip) {
   auditRepo.log({ action: 'LOGOUT', userId: user ? user.id : null, username: user ? user.username : null, ip });
 }
@@ -76,4 +94,4 @@ function resetPassword(token, newPassword) {
   return { ok: true };
 }
 
-module.exports = { login, logout, changePassword, createResetToken, resetPassword, userPayload };
+module.exports = { login, demoLogin, logout, changePassword, createResetToken, resetPassword, userPayload };

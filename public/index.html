@@ -17,21 +17,36 @@
 </head>
 <body>
   <div id="login-screen" class="login-screen hidden">
-    <div class="login-card">
+    <div class="login-card login-card-wide">
       <div class="login-brand">
         <div class="brand-logo login brand-text">Demo Company</div>
       </div>
-      <h1>Sign in</h1>
-      <p class="muted">Access your sales dashboard</p>
-      <form id="login-form">
-        <label>Username / Email</label>
-        <input id="login-identifier" type="text" autocomplete="username" required />
-        <label>Password</label>
-        <input id="login-password" type="password" autocomplete="current-password" required />
-        <div id="login-error" class="login-error hidden"></div>
-        <button type="submit" class="btn btn-primary btn-block">Sign in</button>
-      </form>
-      <p class="login-foot muted">Authorized personnel only. All access is logged.</p>
+      <h1>Select Your Role</h1>
+      <p class="muted">Choose a position to explore the sales dashboard</p>
+      <div id="role-options" class="role-grid">
+        <button class="role-card" data-role="NATIONAL">
+          <span class="role-ico">🏢</span>
+          <span class="role-title">National Sales Manager</span>
+          <span class="role-desc">Full company-wide view</span>
+        </button>
+        <button class="role-card" data-role="REGION">
+          <span class="role-ico">🗺️</span>
+          <span class="role-title">Regional Manager</span>
+          <span class="role-desc">Region-level access</span>
+        </button>
+        <button class="role-card" data-role="AREA">
+          <span class="role-ico">📍</span>
+          <span class="role-title">Area Manager</span>
+          <span class="role-desc">Area-level access</span>
+        </button>
+        <button class="role-card" data-role="TERRITORY">
+          <span class="role-ico">🎯</span>
+          <span class="role-title">Territory Officer</span>
+          <span class="role-desc">Territory-level access</span>
+        </button>
+      </div>
+      <div id="login-error" class="login-error hidden"></div>
+      <p class="login-foot muted">Demo environment — no password required. All data is fictional.</p>
       <p class="login-credit">Developed by Rafshan Jony</p>
     </div>
   </div>

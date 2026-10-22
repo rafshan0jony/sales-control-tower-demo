@@ -300,22 +300,24 @@ function startSyncPoll() {
 }
 
 function setupEvents() {
-  document.getElementById('login-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const identifier = document.getElementById('login-identifier').value.trim();
-    const password = document.getElementById('login-password').value;
-    const errBox = document.getElementById('login-error');
-    errBox.classList.add('hidden');
-    try {
-      const res = await api.post('/auth/login', { identifier, password });
-      token.set(res.token);
-      sessionUser.set(res.user);
-      location.hash = '#/dashboard';
-      boot();
-    } catch (err) {
-      errBox.textContent = err.message;
-      errBox.classList.remove('hidden');
-    }
+  document.querySelectorAll('#role-options .role-card').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const role = btn.dataset.role;
+      const errBox = document.getElementById('login-error');
+      errBox.classList.add('hidden');
+      btn.classList.add('loading');
+      try {
+        const res = await api.post('/auth/demo-login', { role });
+        token.set(res.token);
+        sessionUser.set(res.user);
+        location.hash = '#/dashboard';
+        boot();
+      } catch (err) {
+        btn.classList.remove('loading');
+        errBox.textContent = err.message;
+        errBox.classList.remove('hidden');
+      }
+    });
   });
 
   document.getElementById('logout-btn').addEventListener('click', async () => {
